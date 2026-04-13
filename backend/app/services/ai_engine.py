@@ -6,7 +6,8 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Optional
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from app.core.config import get_settings
 from app.services.pdf_extractor import PageData
@@ -136,8 +137,8 @@ class GeminiEngine(AIEngine):
     def __init__(self):
         if not settings.gemini_api_key:
             raise ValueError("GEMINI_API_KEY is not set in .env")
-        genai.configure(api_key=settings.gemini_api_key)
-        self._model = genai.GenerativeModel(settings.gemini_model)
+        self._client = genai.Client(api_key=settings.gemini_api_key)
+        self._model = settings.gemini_model
         self._total_input_tokens = 0
         self._total_output_tokens = 0
 
@@ -159,20 +160,24 @@ class GeminiEngine(AIEngine):
 
         prompt = _PAGE_ANALYSIS_PROMPT.format(
             drawing_type=drawing_type_label,
-            page_text=page_data.normalized_text[:8000],  # トークン制限を考慮
+            page_text=page_data.normalized_text[:8000],
         )
 
-        contents = [prompt]
-        # 画像がある場合は添付
+        contents: list = [prompt]
         if page_data.image_base64:
-            import base64
             contents = [
-                {"mime_type": "image/png", "data": page_data.image_base64},
+                types.Part.from_bytes(
+                    data=__import__('base64').b64decode(page_data.image_base64),
+                    mime_type="image/png",
+                ),
                 prompt,
             ]
 
         try:
-            response = self._model.generate_content(contents)
+            response = self._client.models.generate_content(
+                model=self._model,
+                contents=contents,
+            )
             self._accumulate_usage(response)
             return self._parse_json_response(response.text)
         except Exception as e:
@@ -192,7 +197,10 @@ class GeminiEngine(AIEngine):
         )
 
         try:
-            response = self._model.generate_content(prompt)
+            response = self._client.models.generate_content(
+                model=self._model,
+                contents=prompt,
+            )
             self._accumulate_usage(response)
             return self._parse_json_response(response.text)
         except Exception as e:
