@@ -1,0 +1,42 @@
+version: '3.9'
+
+services:
+  backend:
+    build: ./backend
+    container_name: drawing-checker-backend
+    restart: unless-stopped
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-1.5-flash}
+      - UPLOAD_DIR=/data/uploads
+      - OUTPUT_DIR=/data/outputs
+      - DATABASE_URL=sqlite+aiosqlite:////data/drawing_checker.db
+      - DEBUG=${DEBUG:-false}
+      - CORS_ORIGINS=["http://localhost", "http://localhost:80", "http://localhost:3000"]
+    volumes:
+      - drawing_data:/data
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build: ./frontend
+    container_name: drawing-checker-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - app-net
+
+volumes:
+  drawing_data:
+
+networks:
+  app-net:
+    driver: bridge

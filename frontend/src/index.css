@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply bg-dark-bg text-dark-text;
+  }
+
+  /* スクロールバー（ダークテーマ） */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0f1117;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2e3350;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3d4460;
+  }
+}
+
+/* react-pdf の PDF 背景をダークに合わせる */
+.react-pdf__Page__canvas {
+  border-radius: 4px;
+}

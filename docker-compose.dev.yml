@@ -1,0 +1,45 @@
+# 開発用 (ホットリロード有効)
+version: '3.9'
+
+services:
+  backend:
+    build: ./backend
+    container_name: drawing-checker-backend-dev
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DEBUG=true
+      - UPLOAD_DIR=/data/uploads
+      - OUTPUT_DIR=/data/outputs
+      - DATABASE_URL=sqlite+aiosqlite:////data/drawing_checker.db
+      - CORS_ORIGINS=["http://localhost:3000"]
+    volumes:
+      - ./backend:/app
+      - drawing_data_dev:/data
+    ports:
+      - "8000:8000"
+    networks:
+      - app-net-dev
+
+  frontend:
+    image: node:20-alpine
+    container_name: drawing-checker-frontend-dev
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+    networks:
+      - app-net-dev
+
+volumes:
+  drawing_data_dev:
+
+networks:
+  app-net-dev:
+    driver: bridge
