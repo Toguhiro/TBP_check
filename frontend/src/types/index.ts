@@ -74,6 +74,7 @@ export interface UncertainItem {
   page: number
   text: string
   reason: string
+  rect?: [number, number, number, number] | null
 }
 
 export interface AnalysisResult {

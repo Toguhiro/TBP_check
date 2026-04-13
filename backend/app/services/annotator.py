@@ -15,7 +15,6 @@ import fitz  # PyMuPDF
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 # アノテーション色定義
 COLOR_OK = (1.0, 0.95, 0.0)        # 黄色: 正常
@@ -175,13 +174,14 @@ def build_annotations_from_results(
                     "check_type": "verified",
                 })
 
-    # AI判断困難（オレンジ）
+    # AI判断困難（オレンジ）- rect がある場合のみアノテーション
     for entity_info in page_entities:
         page_num = entity_info.get("page")
         for uncertain in entity_info.get("uncertain_items", []):
-            if page_num is not None:
+            rect = uncertain.get("rect")
+            if page_num is not None and rect and len(rect) == 4:
                 annotations_by_page[page_num].append({
-                    "rect": uncertain.get("rect", [0, 0, 50, 20]),
+                    "rect": rect,
                     "color": "orange",
                     "message": f"要手動確認: {uncertain.get('text', '')} — {uncertain.get('reason', '')}",
                     "check_type": "uncertain",

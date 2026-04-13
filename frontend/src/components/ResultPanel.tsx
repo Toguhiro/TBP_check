@@ -7,7 +7,7 @@ interface Props {
   result: AnalysisResult
   projectId: string
   fileMap: Record<string, string> // file_id → filename
-  onSelectFile: (fileId: string, page: number) => void
+  onSelectFile: (fileId: string, page: number, rect?: [number, number, number, number] | null) => void
 }
 
 type Tab = 'errors' | 'warnings' | 'ok' | 'uncertain'
@@ -102,7 +102,7 @@ export function ResultPanel({ result, projectId, fileMap, onSelectFile }: Props)
               <div
                 key={i}
                 className="bg-dark-card border border-dark-border border-l-4 border-l-accent-yellow rounded p-3 cursor-pointer hover:bg-dark-border/30"
-                onClick={() => u.file_id && onSelectFile(u.file_id, u.page)}
+                onClick={() => u.file_id && onSelectFile(u.file_id, u.page, u.rect ?? null)}
               >
                 <p className="text-xs font-mono text-accent-yellow">{u.text}</p>
                 <p className="text-xs text-dark-muted mt-1">{u.reason}</p>
@@ -167,7 +167,7 @@ function ResultList({
 }: {
   items: CheckResult[]
   fileMap: Record<string, string>
-  onSelect: (fileId: string, page: number) => void
+  onSelect: (fileId: string, page: number, rect?: [number, number, number, number] | null) => void
   colorClass: string
 }) {
   if (items.length === 0) {
@@ -182,7 +182,7 @@ function ResultList({
           className={`bg-dark-card border border-dark-border border-l-4 ${colorClass} rounded p-3 cursor-pointer hover:bg-dark-border/30`}
           onClick={() => {
             if (item.file_id && item.page_number != null) {
-              onSelect(item.file_id, item.page_number)
+              onSelect(item.file_id, item.page_number, item.location_rect ?? null)
             }
           }}
         >

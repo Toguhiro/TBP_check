@@ -29,6 +29,7 @@ export function WorkspacePage({ projectId, onBack }: Props) {
   const [files, setFiles] = useState<DrawingFile[]>([])
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null)
   const [selectedPage, setSelectedPage] = useState(0)
+  const [highlightRect, setHighlightRect] = useState<[number, number, number, number] | null>(null)
 
   const fileMap: Record<string, string> = Object.fromEntries(
     files.map((f) => [f.id, f.filename])
@@ -124,12 +125,13 @@ export function WorkspacePage({ projectId, onBack }: Props) {
           <div className="flex-1 overflow-hidden">
             {selectedFile && (
               <PdfViewer
-                url={`/api/projects/${projectId}/files/${selectedFile.id}/annotated`}
+                url={`/api/projects/${projectId}/files/${selectedFile.id}/original`}
                 currentPage={selectedPage}
                 onPageChange={setSelectedPage}
                 filename={selectedFile.filename}
                 projectId={projectId}
                 fileId={selectedFile.id}
+                highlightRect={highlightRect}
               />
             )}
           </div>
@@ -165,7 +167,7 @@ export function WorkspacePage({ projectId, onBack }: Props) {
               {files.map((f) => (
                 <button
                   key={f.id}
-                  onClick={() => { setSelectedFileId(f.id); setSelectedPage(0) }}
+                  onClick={() => { setSelectedFileId(f.id); setSelectedPage(0); setHighlightRect(null) }}
                   className={`w-full text-left px-3 py-2 text-xs truncate transition-colors ${
                     selectedFileId === f.id
                       ? 'bg-dark-card text-dark-text border-l-2 border-accent-blue'
@@ -182,12 +184,17 @@ export function WorkspacePage({ projectId, onBack }: Props) {
           <div className="flex-1 overflow-hidden">
             {selectedFile && (
               <PdfViewer
-                url={`/api/projects/${projectId}/files/${selectedFile.id}/annotated`}
+                url={
+                  selectedFile.annotated_path
+                    ? `/api/projects/${projectId}/files/${selectedFile.id}/annotated`
+                    : `/api/projects/${projectId}/files/${selectedFile.id}/original`
+                }
                 currentPage={selectedPage}
                 onPageChange={setSelectedPage}
                 filename={selectedFile.filename}
                 projectId={projectId}
                 fileId={selectedFile.id}
+                highlightRect={highlightRect}
               />
             )}
           </div>
@@ -198,9 +205,10 @@ export function WorkspacePage({ projectId, onBack }: Props) {
               result={analysisResult}
               projectId={projectId}
               fileMap={fileMap}
-              onSelectFile={(fid, page) => {
+              onSelectFile={(fid, page, rect) => {
                 setSelectedFileId(fid)
                 setSelectedPage(page)
+                setHighlightRect(rect ?? null)
               }}
             />
           </div>

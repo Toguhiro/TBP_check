@@ -19,7 +19,6 @@ from app.services.annotator import (
 )
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 
 async def estimate_project_cost(files: list[dict]) -> dict:
@@ -80,7 +79,14 @@ async def run_analysis(files: list[dict]) -> dict:
         pages = extract_pdf(f["path"], render_images=True)
         file_page_data[file_id] = pages
 
-        for page in pages:
+        # 解析ページ範囲（設定で変更可能）
+        s = get_settings()
+        start = s.analysis_page_start
+        end = s.analysis_page_end
+        pages_to_analyze = pages[start:end]
+        logger.info(f"  Analyzing pages {start+1}–{min(end, len(pages))} of {len(pages)}")
+
+        for page in pages_to_analyze:
             logger.info(f"  AI analyzing page {page.page_number}...")
             ai_result = await ai_engine.analyze_page(page, drawing_type)
 
@@ -129,6 +135,7 @@ async def run_analysis(files: list[dict]) -> dict:
     # --- Step 5: アノテーション付きPDF生成 ---
     logger.info("Generating annotated PDFs...")
     annotated_files: dict[str, str] = {}
+    settings = get_settings()
     os.makedirs(settings.output_dir, exist_ok=True)
 
     for f in files:

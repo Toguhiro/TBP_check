@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, B
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.database import get_db
@@ -32,16 +33,24 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
 ):
     """新規プロジェクトを作成する"""
-    project = Project(id=str(uuid.uuid4()), name=data.name)
+    project_id = str(uuid.uuid4())
+    project = Project(id=project_id, name=data.name)
     db.add(project)
     await db.commit()
-    await db.refresh(project)
-    return project
+    # selectinload で files を一緒に取得
+    result = await db.execute(
+        select(Project).options(selectinload(Project.files)).where(Project.id == project_id)
+    )
+    return result.scalar_one()
 
 
 @router.get("", response_model=list[ProjectOut])
 async def list_projects(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Project).order_by(Project.created_at.desc()))
+    result = await db.execute(
+        select(Project)
+        .options(selectinload(Project.files))
+        .order_by(Project.created_at.desc())
+    )
     return result.scalars().all()
 
 
@@ -188,6 +197,32 @@ async def get_results(
     )
 
 
+@router.get("/{project_id}/files/{file_id}/original")
+async def download_original_pdf(
+    project_id: str,
+    file_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """元のPDFを配信する"""
+    result = await db.execute(
+        select(DrawingFile).where(
+            DrawingFile.id == file_id,
+            DrawingFile.project_id == project_id
+        )
+    )
+    db_file = result.scalar_one_or_none()
+    if not db_file:
+        raise HTTPException(status_code=404, detail="ファイルが見つかりません")
+    if not db_file.upload_path or not os.path.exists(db_file.upload_path):
+        raise HTTPException(status_code=404, detail="ファイルが見つかりません")
+
+    return FileResponse(
+        db_file.upload_path,
+        media_type="application/pdf",
+        filename=db_file.filename,
+    )
+
+
 @router.get("/{project_id}/files/{file_id}/annotated")
 async def download_annotated_pdf(
     project_id: str,
@@ -215,7 +250,11 @@ async def download_annotated_pdf(
 
 
 async def _get_project_or_404(project_id: str, db: AsyncSession) -> Project:
-    result = await db.execute(select(Project).where(Project.id == project_id))
+    result = await db.execute(
+        select(Project)
+        .options(selectinload(Project.files))
+        .where(Project.id == project_id)
+    )
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")

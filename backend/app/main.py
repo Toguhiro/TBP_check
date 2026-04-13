@@ -24,7 +24,8 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.upload_dir, exist_ok=True)
     os.makedirs(settings.output_dir, exist_ok=True)
     await init_db()
-    logger.info("Drawing Checker API started")
+    s = get_settings()
+    logger.info(f"Drawing Checker API started | ai_engine={s.ai_engine} | api_key={'SET' if s.anthropic_api_key else 'EMPTY'} | upload_dir={s.upload_dir}")
     yield
     # 終了時処理
     logger.info("Drawing Checker API shutting down")
