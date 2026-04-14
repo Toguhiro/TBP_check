@@ -393,14 +393,17 @@ async def run_analysis(files: list[dict]) -> dict:
                     ))
 
     # 未解決 xref を uncertain_items へ（後で追加）
+    # 単線結線図のみの場合はクロスリファレンス不要なのでスキップ
+    all_single_line = all(dt == 'single_line' for dt in drawing_types.values())
     xref_unresolved_items: list[dict] = []
-    for ref, info in xref_map.items():
-        if not info['resolved']:
-            xref_unresolved_items.append({
-                'text':   f'<{ref}>',
-                'reason': f'参照先 Tag.No "{ref}" が図面内に見つかりません（解析ページ範囲外の可能性）',
-                'page':   info.get('source_page', 0) - 1,  # 0-indexed
-            })
+    if not all_single_line:
+        for ref, info in xref_map.items():
+            if not info['resolved']:
+                xref_unresolved_items.append({
+                    'text':   f'<{ref}>',
+                    'reason': f'参照先 Tag.No "{ref}" が図面内に見つかりません（解析ページ範囲外の可能性）',
+                    'page':   info.get('source_page', 0) - 1,  # 0-indexed
+                })
 
     # ------------------------------------------------------------------ #
     # Phase 2.5: 配線パス解析・回路グラフ構築
@@ -468,8 +471,15 @@ async def run_analysis(files: list[dict]) -> dict:
     rule_issues.extend(mccb_issues)   # Phase 2 の MCCB チェック結果を追加
 
     # xref 整合チェック（Phase 2 の xref_map から生成）
-    xref_check_issues = _check_xref_consistency(xref_map)
-    rule_issues.extend(xref_check_issues)
+    # 単線結線図はクロスリファレンスを記載しない図面種別なのでスキップ
+    non_single_line_files = [
+        fid for fid, dt in drawing_types.items() if dt != 'single_line'
+    ]
+    if non_single_line_files:
+        xref_check_issues = _check_xref_consistency(xref_map)
+        rule_issues.extend(xref_check_issues)
+    else:
+        logger.info("[Rule] xref check skipped: all files are single_line drawing type")
 
     check_results = [issue.to_dict() for issue in rule_issues]
 

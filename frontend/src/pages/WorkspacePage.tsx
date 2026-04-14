@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { toast } from 'react-hot-toast'
-import { ArrowLeft, Loader2 } from 'lucide-react'
+import { ArrowLeft, Loader2, RotateCcw } from 'lucide-react'
 import { FileUploader } from '../components/FileUploader'
 import { CostModal } from '../components/CostModal'
 import { PdfViewer } from '../components/PdfViewer'
@@ -20,6 +20,9 @@ interface Props {
   onBack: () => void
 }
 
+// localStorageキー（プロジェクト別に保存）
+const cacheKey = (pid: string) => `tbp_result_${pid}`
+
 export function WorkspacePage({ projectId, onBack }: Props) {
   const [stage, setStage] = useState<Stage>('upload')
   const [isLoading, setIsLoading] = useState(false)
@@ -30,12 +33,45 @@ export function WorkspacePage({ projectId, onBack }: Props) {
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null)
   const [selectedPage, setSelectedPage] = useState(0)
   const [highlightRect, setHighlightRect] = useState<[number, number, number, number] | null>(null)
+  const [hasCached, setHasCached] = useState(false)
+
+  // 起動時にキャッシュ確認
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(cacheKey(projectId))
+      if (raw) setHasCached(true)
+    } catch { /* ignore */ }
+  }, [projectId])
 
   const fileMap: Record<string, string> = Object.fromEntries(
     files.map((f) => [f.id, f.filename])
   )
 
   const selectedFile = files.find((f) => f.id === selectedFileId)
+
+  // 解析完了後に結果をキャッシュ保存
+  const saveCache = (result: AnalysisResult, fileList: DrawingFile[]) => {
+    try {
+      localStorage.setItem(cacheKey(projectId), JSON.stringify({ result, files: fileList }))
+      setHasCached(true)
+    } catch { /* ignore */ }
+  }
+
+  // キャッシュから前回の結果を復元
+  const loadFromCache = async () => {
+    try {
+      const raw = localStorage.getItem(cacheKey(projectId))
+      if (!raw) return
+      const { result, files: cachedFiles } = JSON.parse(raw)
+      setAnalysisResult(result)
+      setFiles(cachedFiles)
+      if (cachedFiles.length > 0) setSelectedFileId(cachedFiles[0].id)
+      setStage('result')
+      toast.success('前回の解析結果を読み込みました')
+    } catch {
+      toast.error('キャッシュの読み込みに失敗しました')
+    }
+  }
 
   const handleUpload = async (entries: FileEntry[]) => {
     setIsLoading(true)
@@ -45,16 +81,12 @@ export function WorkspacePage({ projectId, onBack }: Props) {
 
       await projectsApi.uploadFiles(projectId, entries.map((e) => e.file), typeMap)
 
-      // コスト推定
       const estimate = await projectsApi.estimate(projectId)
       setCostEstimate(estimate)
 
-      // プロジェクトのファイル一覧を取得
       const project = await projectsApi.get(projectId)
       setFiles(project.files)
-      if (project.files.length > 0) {
-        setSelectedFileId(project.files[0].id)
-      }
+      if (project.files.length > 0) setSelectedFileId(project.files[0].id)
 
       setStage('cost_confirm')
       toast.success('コスト見積もりが完了しました')
@@ -76,9 +108,9 @@ export function WorkspacePage({ projectId, onBack }: Props) {
       })
 
       setAnalysisResult(result)
-      // アノテーション済みPDF urlを取得するためファイル一覧を再取得
       const project = await projectsApi.get(projectId)
       setFiles(project.files)
+      saveCache(result, project.files)
       setStage('result')
       toast.success('解析が完了しました')
     } catch {
@@ -99,14 +131,22 @@ export function WorkspacePage({ projectId, onBack }: Props) {
     <div className="h-screen flex flex-col bg-dark-bg text-dark-text">
       {/* ヘッダー */}
       <header className="flex items-center gap-3 px-4 py-3 bg-dark-surface border-b border-dark-border shrink-0">
-        <button
-          onClick={onBack}
-          className="text-dark-muted hover:text-dark-text transition-colors"
-        >
+        <button onClick={onBack} className="text-dark-muted hover:text-dark-text transition-colors">
           <ArrowLeft size={20} />
         </button>
         <h1 className="text-sm font-semibold text-dark-text">AI 検図システム</h1>
         <span className="text-dark-muted text-xs">/ {projectId.slice(0, 8)}</span>
+
+        {/* 前回の結果を再読み込みボタン */}
+        {hasCached && stage === 'upload' && (
+          <button
+            onClick={loadFromCache}
+            className="ml-auto flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-dark-border text-dark-muted hover:text-dark-text hover:border-accent-blue transition-colors"
+          >
+            <RotateCcw size={12} />
+            前回の結果を表示
+          </button>
+        )}
       </header>
 
       {/* メインコンテンツ */}
@@ -121,7 +161,6 @@ export function WorkspacePage({ projectId, onBack }: Props) {
 
       {stage === 'cost_confirm' && costEstimate && (
         <div className="flex-1 flex">
-          {/* PDFプレビュー（左） */}
           <div className="flex-1 overflow-hidden">
             {selectedFile && (
               <PdfViewer
@@ -135,7 +174,6 @@ export function WorkspacePage({ projectId, onBack }: Props) {
               />
             )}
           </div>
-          {/* コスト確認モーダル */}
           <CostModal
             estimate={costEstimate}
             onConfirm={handleConfirmAnalysis}
@@ -150,15 +188,13 @@ export function WorkspacePage({ projectId, onBack }: Props) {
           <p className="text-dark-text font-medium">
             {statusLabel[analysisStatus] ?? '処理中…'}
           </p>
-          <p className="text-dark-muted text-sm">
-            ページ数によっては数分かかる場合があります
-          </p>
+          <p className="text-dark-muted text-sm">ページ数によっては数分かかる場合があります</p>
         </div>
       )}
 
       {stage === 'result' && analysisResult && (
         <div className="flex-1 flex overflow-hidden">
-          {/* ファイル選択サイドバー（左） */}
+          {/* ファイル選択サイドバー */}
           <div className="w-48 bg-dark-surface border-r border-dark-border flex flex-col">
             <p className="text-xs font-semibold text-dark-muted px-3 py-2 uppercase tracking-wide border-b border-dark-border">
               図面ファイル
@@ -178,9 +214,16 @@ export function WorkspacePage({ projectId, onBack }: Props) {
                 </button>
               ))}
             </div>
+            {/* 再解析ボタン */}
+            <button
+              onClick={() => setStage('upload')}
+              className="flex items-center gap-1.5 text-xs px-3 py-2 text-dark-muted hover:text-dark-text border-t border-dark-border transition-colors"
+            >
+              <RotateCcw size={11} /> 新しく解析
+            </button>
           </div>
 
-          {/* PDFビューア（中央） */}
+          {/* PDFビューア */}
           <div className="flex-1 overflow-hidden">
             {selectedFile && (
               <PdfViewer
@@ -199,7 +242,7 @@ export function WorkspacePage({ projectId, onBack }: Props) {
             )}
           </div>
 
-          {/* 結果パネル（右） */}
+          {/* 結果パネル */}
           <div className="w-80 overflow-hidden">
             <ResultPanel
               result={analysisResult}

@@ -48,6 +48,9 @@ app.add_middleware(
 
 app.include_router(projects_router)
 
+# 出力ファイルを静的配信（診断用PDF等）
+app.mount("/outputs", StaticFiles(directory=settings.output_dir), name="outputs")
+
 
 @app.get("/api/health")
 async def health():

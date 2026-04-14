@@ -16,11 +16,11 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# アノテーション色定義
-COLOR_OK = (1.0, 0.95, 0.0)        # 黄色: 正常
-COLOR_ERROR = (1.0, 0.15, 0.15)    # 赤色: エラー
-COLOR_WARNING = (1.0, 0.55, 0.0)   # オレンジ: 警告・AI不明
-COLOR_INFO = (0.0, 0.5, 1.0)       # 青: 情報（参照リンク）
+# アノテーション色定義（RGB 0.0-1.0）
+COLOR_OK      = (0.0,  0.78, 0.2)   # 緑: 正常
+COLOR_ERROR   = (1.0,  0.1,  0.1)   # 赤: エラー
+COLOR_WARNING = (1.0,  0.5,  0.0)   # オレンジ: 警告
+COLOR_INFO    = (0.1,  0.5,  1.0)   # 青: 情報
 
 
 def annotate_pdf(
@@ -66,30 +66,49 @@ def _add_annotation(page: fitz.Page, ann: dict):
 
     try:
         rect = fitz.Rect(rect_data)
+        # 小さすぎる rect は少し拡張して視認性を上げる
+        if rect.width < 20:
+            rect = fitz.Rect(rect.x0 - 4, rect.y0 - 4, rect.x1 + 4, rect.y1 + 4)
+
         color_name = ann.get("color", "yellow")
         color = {
             "yellow": COLOR_OK,
-            "red": COLOR_ERROR,
+            "red":    COLOR_ERROR,
             "orange": COLOR_WARNING,
-            "blue": COLOR_INFO,
+            "blue":   COLOR_INFO,
         }.get(color_name, COLOR_OK)
 
-        # ハイライト追加
-        highlight = page.add_highlight_annot(rect)
-        highlight.set_colors(stroke=color)
-        highlight.set_opacity(0.4)
+        # 枠線 + 塗りつぶし四角形（highlight より視認性が高い）
+        border_width = 2.0 if color_name == "red" else 1.5
+        fill_alpha = 0.18 if color_name == "red" else 0.12
 
-        # エラー・警告にはポップアップコメントも追加
+        # 塗りつぶし（半透明）
+        shape = page.new_shape()
+        shape.draw_rect(rect)
+        shape.finish(
+            color=color,
+            fill=color,
+            fill_opacity=fill_alpha,
+            width=border_width,
+        )
+        shape.commit()
+
+        # 枠線を別レイヤーで上書き（くっきり見せる）
+        page.draw_rect(rect, color=color, width=border_width)
+
+        # ポップアップコメント（エラー・警告のみ）
         message = ann.get("message", "")
         if message and color_name in ("red", "orange"):
             check_type = ann.get("check_type", "")
-            label = {"red": "[エラー]", "orange": "[要確認]"}.get(color_name, "")
-            highlight.set_info(
+            label = {"red": "【エラー】", "orange": "【警告】"}.get(color_name, "")
+            annot = page.add_rect_annot(rect)
+            annot.set_colors(stroke=color, fill=color)
+            annot.set_opacity(0.0)   # 枠は描画済みなので透明
+            annot.set_info(
                 content=f"{label} {check_type}: {message}",
                 title="AI検図システム",
             )
-
-        highlight.update()
+            annot.update()
 
     except Exception as e:
         logger.warning(f"Failed to add annotation: {e}, rect={rect_data}")

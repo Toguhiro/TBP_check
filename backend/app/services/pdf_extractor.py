@@ -167,7 +167,9 @@ def extract_pdf(pdf_path: str, render_images: bool = True) -> list[PageData]:
             # Phase 1: fitz ブロック抽出・行分類
             # fitz と pdfplumber を同一ドキュメントから使うことで座標系を統一
             # ---------------------------------------------------------------- #
-            raw_blocks = fitz_page.get_text('blocks')
+            # clip=fitz_page.rect で表示領域（回転適用後）に限定
+            # ※ PDFがCAD縦向き格納＋90°回転表示のため clip 必須
+            raw_blocks = fitz_page.get_text('blocks', clip=fitz_page.rect)
             for block in raw_blocks:
                 # block = (x0, y0, x1, y1, text, block_no, block_type)
                 if len(block) < 7:
