@@ -47,40 +47,50 @@ _PAGE_ANALYSIS_PROMPT = """
 あなたは電気・計装の専門家です。
 以下の電気図面（{drawing_type}）の1ページについて、構造化された情報を抽出・分析してください。
 
-【抽出してほしい情報】
-1. entities: 図面内の全 Tag.No・機器名称リスト
-   - tag: 正規化されたTag.No（例: "TE-0K-121", "88X"）
-   - name: 機器名称または説明
-   - device_type: "relay" | "transformer" | "breaker" | "ct" | "vt" | "indicator" | "switch" | "other"
-   - rect: 位置情報 [x0, y0, x1, y1]（わかる場合のみ）
-   - reference_sheet: 参照先シート番号（リレー接点・コイル等）
+【前処理済みデータ】
+Phase 1〜2.5 のルールベース処理で以下が既に解決されています:
+- classified_lines: テキストブロックを行分割・種別分類済み
+- xref_map: クロスリファレンスの解決状況（resolved=True/False）
+- serial_groups: 直列接続グループ（AND論理条件）
+- branch_points: 並列分岐点（OR論理条件）
+- coil_tables: リレーコイルテーブル構造化済み
 
-2. customer_name: 表題欄から読み取れる顧客名（なければ null）
+【前処理済み構造化データ】
+{structured_context}
 
-3. electrical_specs: 検出した電気諸元
-   - value: 数値
-   - unit: "V" | "A" | "kA" | "kVA" | "Hz" など
-   - context: 説明文
-
-4. logic_elements: シーケンス・ロジック要素（展開接続図・シーケンスロジック図のみ）
-   - element_type: "coil" | "no_contact" | "nc_contact" | "timer" | "logic_gate"
-   - tag: 関連Tag.No
-   - condition: 励磁条件・論理条件
-
-5. uncertain_items: 意味が不明・分類困難な要素のリスト
-   - text: 対象テキスト
-   - reason: 不明・分類困難な理由
-
-【重要な注意】
-- 全角/半角が混在している可能性があります
-- テキストに改行やスペースが含まれる場合があります（例："TE\n-0K\n-121" → "TE-0K-121"）
-- 意味が取れないものは confident: false として uncertain_items に含めてください
-- 全部を確認するよりも、確信のある情報だけを返す方が望ましい
-
-ページテキスト:
+【ページ抽出テキスト（参考）】
 ```
 {page_text}
 ```
+
+【あなたへの依頼】
+上記の構造化データと画像を参照して、以下を出力してください。
+ルールベースで解決できなかった「判断が必要な箇所」に集中してください。
+
+1. entities: 図面内の機器 Tag.No・名称
+   - tag: Tag.No（例: "88X", "TE-0K-121"）— classified_lines の tag_no と一致させること
+   - name: 機器名称
+   - device_type: "relay" | "breaker" | "ct" | "vt" | "indicator" | "switch" | "other"
+   - rect: 位置情報（classified_lines の rect をそのまま使用推奨）
+
+2. customer_name: 表題欄の顧客名（なければ null）
+
+3. electrical_specs: 電気諸元
+   - value: 数値, unit: "V"|"A"|"kA"|"kVA"|"Hz", context: 説明
+
+4. logic_elements: コイル・接点（展開接続図のみ）
+   - element_type: "coil" | "no_contact" | "nc_contact" | "timer"
+   - tag: Tag.No
+   - condition: 励磁条件
+
+5. uncertain_items: AI判断困難な項目
+   - text: 対象テキスト
+   - reason: 不明・分類困難な理由
+
+【重要】
+- tag_no 種別の classified_lines 以外（circuit_no, terminal_no 等）をTag.Noと誤認しないこと
+- 確信のある情報のみ返すこと
+- xref_map で resolved=True のものはクロスリファレンス整合OK
 
 JSONのみ返答してください（コードブロック不要）:
 {{
@@ -91,6 +101,56 @@ JSONのみ返答してください（コードブロック不要）:
   "uncertain_items": [...]
 }}
 """
+
+def _build_structured_context(page_data: PageData, context: Optional[dict]) -> str:
+    """
+    Phase 1〜2.5 の前処理結果を Claude プロンプト用の構造化テキストに変換する。
+    """
+    import json
+
+    # 1. このページの classified_lines（種別ごと集計）
+    cl = page_data.classified_lines
+    kinds_summary: dict = {}
+    for e in cl:
+        k = e.get('kind', 'text')
+        kinds_summary[k] = kinds_summary.get(k, 0) + 1
+
+    classified_info = {
+        'total_lines': len(cl),
+        'by_kind': kinds_summary,
+        'tag_nos': [e['text'] for e in cl if e.get('kind') == 'tag_no'],
+        'cross_refs': [e['text'] for e in cl if e.get('kind') == 'cross_ref'],
+        'relay_models': [e['text'] for e in cl if e.get('kind') == 'relay_model'],
+    }
+
+    result: dict = {
+        'page_number': page_data.page_number + 1,
+        'classified_lines_summary': classified_info,
+    }
+
+    if context:
+        circuit_graph = context.get('circuit_graph', {})
+        xref_map      = context.get('xref_map', {})
+
+        pg = page_data.page_number
+        serial = [g for g in circuit_graph.get('serial_groups', []) if g.get('page') == pg]
+        branch = [b for b in circuit_graph.get('branch_points', []) if b.get('page') == pg]
+
+        resolved_count   = sum(1 for v in xref_map.values() if v.get('resolved'))
+        unresolved_count = len(xref_map) - resolved_count
+
+        result['circuit_context'] = {
+            'serial_groups_this_page': serial[:30],
+            'branch_points_this_page': branch[:20],
+            'xref_summary': {
+                'resolved':   resolved_count,
+                'unresolved': unresolved_count,
+            },
+            'coil_tables': circuit_graph.get('coil_tables', [])[:10],
+        }
+
+    return json.dumps(result, ensure_ascii=False, indent=2)[:6000]
+
 
 def _parse_json_response(text: str) -> dict:
     """JSONレスポンスをパースする（共通処理）"""
@@ -178,9 +238,13 @@ class ClaudeEngine(AIEngine):
             "unknown": "不明",
         }.get(drawing_type, drawing_type)
 
+        # Phase 2.5 構造化コンテキストを構築
+        structured_context = _build_structured_context(page_data, context)
+
         prompt = _PAGE_ANALYSIS_PROMPT.format(
             drawing_type=drawing_type_label,
-            page_text=page_data.normalized_text[:8000],
+            page_text=page_data.normalized_text[:4000],  # 構造化データで補完するので短縮
+            structured_context=structured_context,
         )
 
         content: list = []
@@ -271,9 +335,11 @@ class GeminiEngine(AIEngine):
             "unknown": "不明",
         }.get(drawing_type, drawing_type)
 
+        structured_context = _build_structured_context(page_data, context)
         prompt = _PAGE_ANALYSIS_PROMPT.format(
             drawing_type=drawing_type_label,
-            page_text=page_data.normalized_text[:8000],
+            page_text=page_data.normalized_text[:4000],
+            structured_context=structured_context,
         )
 
         contents: list = [prompt]

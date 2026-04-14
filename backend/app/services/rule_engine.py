@@ -1,12 +1,26 @@
 """
 検図ルールエンジン（ルールベース部分）
 AIの結果を補完・検証するルールを実装する
+
+Phase 2:
+  build_xref_map()     : xref→Tag照合マップ（全ページ横断）
+  parse_coil_table()   : コイルテーブル構造化
+  check_mccb_rating()  : 遮断器定格 JIS 適合チェック
 """
 import re
 import logging
 from collections import defaultdict
 from typing import Optional
 from app.services.text_normalizer import normalize_tag_no, normalize_for_comparison
+
+# Phase 2 用（pdf_extractor と同じパターン）
+_XREF_PAT    = re.compile(r'^<([0-9A-Z\-]+)>$')
+_RELAY_PAT   = re.compile(r'^(MY|H3|SRD|MK|LY|G2R)[0-9A-Z\-]+$')
+_MCCB_PAT    = re.compile(r'(\d+)P\s*(\d+)AF\s*/\s*(\d+)AT', re.IGNORECASE)
+_TAG_PAT     = re.compile(
+    r'^[0-9]{2,3}[A-Z]{1,5}[0-9]?(-[0-9]+)?$'
+    r'|^[0-9]{2,3}-[0-9]+$'
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +66,165 @@ class CheckIssue:
             "location_rect": self.location_rect,
             "detail": self.detail,
         }
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2: テキスト構造化ルールベース処理
+# --------------------------------------------------------------------------- #
+
+# JIS C 8201 遮断器定格テーブル: {AF: [許容AT値, ...]}
+JIS_MCCB_TABLE: dict[int, list[int]] = {
+    225: [100, 125, 150, 175, 200, 225],
+    100: [15, 20, 30, 40, 50, 60, 75, 100],
+    50:  [10, 15, 20, 30, 40, 50],
+    30:  [10, 15, 20, 30],
+    20:  [10, 15, 20],
+}
+
+
+def build_xref_map(all_page_classified: list[list[dict]]) -> dict[str, dict]:
+    """
+    全ページの classified_lines を受け取り、
+    xref の参照先ページを解決するマップを返す。
+
+    Args:
+        all_page_classified: [[{text, kind, rect}, ...], ...]  (ページ順)
+
+    Returns:
+        {
+            '09A': {'resolved': True,  'pages': [12, 35]},
+            '49H': {'resolved': False, 'pages': []},
+        }
+    """
+    # tag_no の出現ページを収集
+    tag_pages: dict[str, list[int]] = defaultdict(list)
+    for pg_idx, entities in enumerate(all_page_classified):
+        for e in entities:
+            if e.get('kind') == 'tag_no':
+                tag_pages[e['text']].append(pg_idx + 1)
+
+    # xref の参照先を解決
+    xref_map: dict[str, dict] = {}
+    for pg_idx, entities in enumerate(all_page_classified):
+        for e in entities:
+            if e.get('kind') != 'cross_ref':
+                continue
+            m = _XREF_PAT.match(e['text'])
+            if not m:
+                continue
+            ref = m.group(1)
+            if ref not in xref_map:
+                pages = tag_pages.get(ref, [])
+                xref_map[ref] = {
+                    'resolved': len(pages) > 0,
+                    'pages': sorted(set(pages)),
+                    'source_page': pg_idx + 1,
+                    'rect': e.get('rect'),
+                }
+
+    resolved = sum(1 for v in xref_map.values() if v['resolved'])
+    total = len(xref_map)
+    logger.info(f"xref_map: {resolved}/{total} resolved ({100*resolved//total if total else 0}%)")
+    return xref_map
+
+
+def parse_coil_table(entities: list[dict], page_height: float = 842.0) -> list[dict]:
+    """
+    1ページの classified_lines からコイルテーブルを構造化する。
+    リレー型番が出現する最小y座標をテーブル開始境界とする。
+
+    Returns:
+        [
+            {
+                'tag': '2TX',
+                'model': 'MY4ZN-D2',
+                'contacts': [
+                    {'terminal': '9',  'xref': '09B', 'type': 'a'},
+                    {'terminal': '10', 'xref': '09B', 'type': 'b'},
+                ],
+            },
+            ...
+        ]
+    """
+    relay_entries = [e for e in entities if e.get('kind') == 'relay_model' and e.get('rect')]
+    if not relay_entries:
+        return []
+
+    result = []
+    used_tag_ys: set = set()
+
+    for relay_e in relay_entries:
+        rx0 = relay_e['rect'][0]
+        ry  = relay_e['rect'][1]
+
+        # 同じ x 列（±80px）、y ±70px 以内の tag_no を探す
+        nearby_tags = [
+            e for e in entities
+            if e.get('kind') == 'tag_no'
+            and e.get('rect')
+            and abs(e['rect'][0] - rx0) < 80
+            and abs(e['rect'][1] - ry) < 70
+            and e['rect'][1] not in used_tag_ys
+        ]
+        nearby_tags.sort(key=lambda e: abs(e['rect'][1] - ry))
+        tag_text = ''
+        if nearby_tags:
+            tag_text = nearby_tags[0]['text']
+            used_tag_ys.add(nearby_tags[0]['rect'][1])
+
+        # 端子番号（コイルシンボル周辺 x=rx0±100、y ±50px）
+        terminals = [
+            e for e in entities
+            if e.get('kind') == 'terminal_no'
+            and e.get('rect')
+            and abs(e['rect'][0] - rx0) < 100
+            and abs(e['rect'][1] - ry) < 50
+        ]
+        b_contact_terminals = [t['text'] for t in terminals if '●' in t['text']]
+
+        if relay_e['text'] or tag_text:
+            result.append({
+                'tag':           tag_text,
+                'model':         relay_e['text'],
+                'rect':          relay_e.get('rect'),
+                'contacts':      [],  # 接点は回路エリアの cross_ref から別途取得
+                'has_b_contact': len(b_contact_terminals) > 0,
+            })
+
+    return result
+
+
+def check_mccb_rating(af: int, at: int) -> bool:
+    """JIS C 8201 準拠の遮断器定格チェック"""
+    return at in JIS_MCCB_TABLE.get(af, [])
+
+
+def extract_mccb_specs(classified_lines: list[dict]) -> list[dict]:
+    """
+    classified_lines テキストから MCCB 定格を抽出して JIS チェックを実施する。
+    例: '3P 225AF/125AT' を検出
+
+    Returns:
+        [{'poles': 3, 'af': 225, 'at': 125, 'jis_ok': True, 'rect': [...]}]
+    """
+    results = []
+    for e in classified_lines:
+        text = e.get('text', '')
+        m = _MCCB_PAT.search(text)
+        if not m:
+            continue
+        poles = int(m.group(1))
+        af = int(m.group(2))
+        at = int(m.group(3))
+        results.append({
+            'poles': poles,
+            'af': af,
+            'at': at,
+            'jis_ok': check_mccb_rating(af, at),
+            'rect': e.get('rect'),
+            'raw_text': text,
+        })
+    return results
 
 
 def run_rule_checks(project_entities: list[dict]) -> list[CheckIssue]:
